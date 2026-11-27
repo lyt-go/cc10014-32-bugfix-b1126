@@ -1,6 +1,6 @@
 import { request } from './client'
 import { moduleMeta } from '@/data/modules'
-import type { ActionResult, EntryRow, OverviewResult, PageResult } from '@/data/types'
+import type { ActionResult, EntryRow, OverviewResult, PageResult, PreparationItem } from '@/data/types'
 
 export { moduleMeta }
 
@@ -29,11 +29,73 @@ export async function runAction(
   key: string,
   id: number,
   action: string,
+  values: Record<string, string> = {},
 ): Promise<ActionResult> {
   const response = await request(`/api/${key}/${id}/actions`, {
     method: 'POST',
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, values }),
   })
+  return await response.json()
+}
+
+export type PreparationResult = {
+  module: string
+  entry_id: number
+  工序名称: string
+  备料状态: string
+  材料核对通过: boolean
+  items: PreparationItem[]
+}
+
+export type EligibilityResult = {
+  module: string
+  entry_id: number
+  工序名称: string
+  开工条件: string
+  材料核对通过: boolean
+  reasons: string[]
+  items: PreparationItem[]
+}
+
+export async function fetchPreparation(
+  key: string,
+  id: number,
+): Promise<PreparationResult> {
+  const response = await request(`/api/${key}/${id}/preparation`)
+  if (!response.ok) throw new Error('备料清单读取失败')
+  return await response.json()
+}
+
+export async function fetchStartEligibility(
+  key: string,
+  id: number,
+): Promise<EligibilityResult> {
+  const response = await request(`/api/${key}/${id}/start-eligibility`)
+  if (!response.ok) throw new Error('开工审批资格读取失败')
+  return await response.json()
+}
+
+export type RequisitionResult = {
+  module: string
+  entry_id: number
+  材料名称: string
+  规格型号: string
+  送检批次: string
+  对应工序: string
+  签认状态: string
+  证明状态: string
+  已领数量: number
+  待领数量: number
+  已退回数量: number
+  items: Record<string, unknown>[]
+}
+
+export async function fetchRequisitions(
+  key: string,
+  id: number,
+): Promise<RequisitionResult> {
+  const response = await request(`/api/${key}/${id}/requisitions`)
+  if (!response.ok) throw new Error('领用记录读取失败')
   return await response.json()
 }
 

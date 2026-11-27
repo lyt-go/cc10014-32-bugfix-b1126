@@ -95,8 +95,75 @@ def create_entry(module: str, payload: EntryPayload) -> ActionResult:
 @router.post("/{module}/{entry_id}/actions", response_model=ActionResult)
 def run_action(module: str, entry_id: int, payload: ActionPayload) -> ActionResult:
     service = require_service(module)
-    entry, message = service.run_action(entry_id, payload.action.strip())
+    entry, message = service.run_action(
+        entry_id, payload.action.strip(), values=payload.values)
     return ActionResult(ok=entry is not None, message=message, entry=entry)
+
+
+# ── 材料备料 / 开工审批联动查询 API ──
+
+@router.get("/{module}/{entry_id}/preparation")
+def get_preparation(module: str, entry_id: int) -> dict[str, Any]:
+    """工序编排的备料清单：实时由材料核验批次台账生成。"""
+    if module != "work_sequence":
+        raise HTTPException(status_code=404, detail="只有工序编排提供备料清单")
+    service = require_service(module)
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"工序卡 {entry_id} 不存在")
+    return {
+        "module": module,
+        "entry_id": entry_id,
+        "工序名称": entry.get("工序名称", ""),
+        "备料状态": entry.get("备料状态", ""),
+        "材料核对通过": entry.get("材料核对通过"),
+        "items": service.preparation(entry_id),
+    }
+
+
+@router.get("/{module}/{entry_id}/start-eligibility")
+def get_start_eligibility(module: str, entry_id: int) -> dict[str, Any]:
+    """开工审批资格：与备料清单使用同一核验口径。"""
+    if module != "work_sequence":
+        raise HTTPException(status_code=404, detail="只有工序编排提供开工审批资格")
+    service = require_service(module)
+    ok, reasons, entry = service.start_eligibility(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"工序卡 {entry_id} 不存在")
+    return {
+        "module": module,
+        "entry_id": entry_id,
+        "工序名称": entry.get("工序名称", ""),
+        "开工条件": "通过" if ok else "不通过",
+        "材料核对通过": ok,
+        "reasons": reasons,
+        "items": service.preparation(entry_id),
+    }
+
+
+@router.get("/{module}/{entry_id}/requisitions")
+def get_requisitions(module: str, entry_id: int) -> dict[str, Any]:
+    """重新进入备料时查询材料批次的领用是否成立（含撤回签认后的历史领用）。"""
+    if module != "material_verify":
+        raise HTTPException(status_code=404, detail="只有材料核验提供批次领用查询")
+    service = require_service(module)
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"材料核验单 {entry_id} 不存在")
+    return {
+        "module": module,
+        "entry_id": entry_id,
+        "材料名称": entry.get("材料名称", ""),
+        "规格型号": entry.get("规格型号", ""),
+        "送检批次": entry.get("送检批次", ""),
+        "对应工序": entry.get("对应工序", ""),
+        "签认状态": entry.get("status", ""),
+        "证明状态": entry.get("证明状态", ""),
+        "已领数量": entry.get("已领数量", 0),
+        "待领数量": entry.get("待领数量", 0),
+        "已退回数量": entry.get("已退回数量", 0),
+        "items": service.requisition_status(entry_id),
+    }
 
 
 # ── 跨模块联动查询 API ──

@@ -77,6 +77,16 @@ class Store:
             for k in expired:
                 del self._idempotent_log[k]
 
+    def clear_idempotent(self, module: str, entry_id: int, action: str) -> None:
+        """撤销动作的幂等标记。
+
+        用于状态被反向操作回滚的场景（例如签认被仓管撤回后允许重新签认），
+        避免幂等窗口把合法的再次执行挡回去。
+        """
+        key = self.idempotent_key(module, entry_id, action)
+        with self._lock:
+            self._idempotent_log.pop(key, None)
+
     # ── 并发保护 ──
     def acquire_resource(self, resource_key: str, wait_timeout: float = 5.0) -> bool:
         """获取资源锁，用于并发操作保护。"""

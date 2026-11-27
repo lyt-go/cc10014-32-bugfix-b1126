@@ -16,8 +16,11 @@ class BaseModuleService:
     LIST_FIELDS: list[str] = []
     REQUIRED_FIELDS: list[str] = []
     STATUS_ORDER: list[str] = []
-    ACTION_RULES: dict[str, str] = {}
+    ACTION_RULES: dict[str, str | None] = {}
     NEGATIVE_ACTIONS: list[str] = []
+    # 同一幂等窗口内允许重复执行的动作（领用、撤回等会计入台账的动作，
+    # 由台账自身保证不重复扣减）。
+    NON_IDEMPOTENT_ACTIONS: list[str] = []
 
     # ── 跨模块业务扩展点（子类可覆盖） ──
     def cross_module_verify(
@@ -77,10 +80,27 @@ class BaseModuleService:
         rows.append(entry)
         return entry, []
 
-    def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
-        """执行动作：幂等检查 -> 前置校验 -> 状态变更 -> 跨模块联动。"""
+    def run_action(
+        self, entry_id: int, action: str, values: dict[str, Any] | None = None
+    ) -> tuple[dict[str, Any] | None, str]:
+        """执行动作：幂等检查 -> 前置校验 -> 状态变更 -> 跨模块联动。
+
+        values 用于携带动作参数（如领用数量），普通状态流转可以留空。
+        """
+        entry = store.find(self.MODULE, entry_id)
+        if entry is not None and values:
+            entry["_action_values"] = dict(values)
+        try:
+            return self._run_action(entry_id, action)
+        finally:
+            if entry is not None:
+                entry.pop("_action_values", None)
+
+    def _run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
         # 幂等检查
-        if store.check_idempotent(self.MODULE, entry_id, action):
+        if action not in self.NON_IDEMPOTENT_ACTIONS and store.check_idempotent(
+            self.MODULE, entry_id, action
+        ):
             entry = store.find(self.MODULE, entry_id)
             if entry:
                 return entry, f"操作「{action}」已执行过，当前状态：{entry.get('status', '')}"
@@ -90,9 +110,10 @@ class BaseModuleService:
         if entry is None:
             return None, f"{self.ENTITY} {entry_id} 不存在或已归档"
 
-        target = self.ACTION_RULES.get(action)
-        if target is None:
+        if action not in self.ACTION_RULES:
             return None, f"动作「{action}」不属于{self.MODULE}可执行范围"
+        # target 为 None 表示动作不改变状态，只产生台账/联动效果（如领用材料）。
+        target = self.ACTION_RULES[action]
 
         # 跨模块前置校验
         passed, reason = self.cross_module_verify(entry_id, action, entry)
@@ -105,15 +126,17 @@ class BaseModuleService:
             return None, "资源正在被其他操作处理，请稍后重试"
 
         try:
-            entry["status"] = target
-            entry["pending"] = target != self.STATUS_ORDER[-1]
+            if target is not None:
+                entry["status"] = target
+                entry["pending"] = target != self.STATUS_ORDER[-1]
             entry["abnormal"] = action in self.NEGATIVE_ACTIONS
 
             # 执行跨模块副作用
             self.cross_module_effect(entry_id, action, entry)
 
-            # 标记幂等
-            store.mark_idempotent(self.MODULE, entry_id, action)
+            # 标记幂等（允许重新执行的动作由服务自报）
+            if action not in self.NON_IDEMPOTENT_ACTIONS:
+                store.mark_idempotent(self.MODULE, entry_id, action)
             return entry, f"{self.ENTITY}已{action}"
         finally:
             store.release_resource(resource_key)
